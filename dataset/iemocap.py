@@ -4,31 +4,28 @@ import pickle
 import random
 import librosa
 import numpy as np
-
+import torch
 
 LABELS = {'hap':0,'ang':1, 'exc':0,'sad':2,'neu':3}
-class TrainTestValid:
-    def __init__(self, dataset_file):
+FOLDS = {1:'Ses01M',2:'Ses01F', 3:'Ses02M',4:'Ses02F', 5:'Ses03M',6:'Ses03F', 7:'Ses04M',8:'Ses04F', 9:'Ses05M',10:'Ses05F'}
+
+class TrainTest:
+    def __init__(self, dataset_file, fold_id):
+        self.fold = FOLDS[fold_id]
         with open(dataset_file, 'rb') as handle:
             self.data = pickle.load(handle)
 
     def __call__(self,):
         filenames = list(self.data.keys())
-        rand_idx = random.sample(range(len(filenames)), int(len(filenames)*0.2))
-        train_splits, test_splits, valid_splits = list(),list(),list()
-        for i in range(0, int(len(rand_idx)/2)):
-            idx = rand_idx[i]
-            valid_splits.append(self.data[filenames[idx]])
-        for i in range(int(len(rand_idx)/2), len(rand_idx)):
-            idx = rand_idx[i]
-            test_splits.append(self.data[filenames[idx]])
-        for idx in range(len(filenames)):
-            if idx in rand_idx:
-                continue
+        
+        train_splits, test_splits = list(),list()
+        for filename in filenames:
+            if filename.split('_')[0]==self.fold:
+                test_splits.append(self.data[filename])
             else:
-                train_splits.append(self.data[filenames[idx]])
-        return train_splits, valid_splits, test_splits
-
+                train_splits.append(self.data[filename])
+        return train_splits, test_splits
+        
 class IEMOCAPDataset:
     def __init__(self, dataset, glove_path, max_frames=750, max_words=50):
         self.dataset = dataset
@@ -53,35 +50,35 @@ class IEMOCAPDataset:
     @property
     def _load_glove(self,):
         self.word2vec = {}
-        words = []
-        with open(self.glove_path, 'rb') as f:
-            for l in f:
-                line = l.decode().split()
-                word = line[0]
-                words.append(word)
-                try:
-                    vect = np.array(line[1:]).astype(np.float)
-                    self.word2vec[word] = vect
-                except:
-                    continue
-    
+        with open(self.glove_path, 'rb') as handle:
+            self.word2vec = pickle.load(handle)
+
     def _get_glove_features(self,text):
         import re
-        clean_string = ' '.join(list(filter(None, re.sub(r"[^\w\d'\s]+",' ',text).split(' ')))).lower()
+        clean_string = ' '.join(list(filter(None, re.sub(r"[^\w\d'\s]+",' ',text).split(' '))))
         glove_feats = []
         for word in clean_string.split(' '):
             try:
                 glove_feats.append(self.word2vec[word])
             except:
-                continue
+                try:
+                    glove_feats.append(self.word2vec[word.lower()])
+                except:
+                    continue
+            
+        if glove_feats==[]:
+            return None
         text_feats = np.asarray(glove_feats)
         if text_feats.shape[0]>=self.max_words:
             return text_feats[:self.max_words,:]
         else:
-            padded_feats = np.concatenate((text_feats, np.zeros((self.max_words-text_feats.shape[0], text_feats.shape[1]))), axis=0)
+            try:
+                padded_feats = np.concatenate((text_feats, np.zeros((self.max_words-text_feats.shape[0], text_feats.shape[1]))), axis=0)
+            except:
+                padded_feats = np.concatenate((text_feats, np.zeros((self.max_words-len(glove_feats), 300))), axis=0)
             assert padded_feats.shape[0]==self.max_words
             return padded_feats
-            
+
     def __len__(self):
         return len(self.dataset)
     
@@ -93,20 +90,15 @@ class IEMOCAPDataset:
         audio_feats = self._feature_extraction(audio_path)
         text_feats = self._get_glove_features(text)
         label = LABELS[item['label']]
-        return audio_feats, text_feats, x_vector, label
+        return torch.Tensor(audio_feats), torch.Tensor(text_feats), torch.Tensor(x_vector), torch.LongTensor([label])
         
         
-        
-    
 
 if __name__=='__main__':
     dataset_file = '/media/newhd/IEMOCAP_dataset/IEMOCAP_x_vector.pickle'
-    glove_path = '/media/newhd/IEMOCAP_dataset/glove.42B.300d.txt'
-    traintestvalid = TrainTestValid(dataset_file)
-    train_splits, valid_splits, test_splits = traintestvalid()
+    glove_path = '/media/newhd/IEMOCAP_dataset/glove.840B.300d.pickle'
+    traintest = TrainTest(dataset_file, 1)
+    train_splits, valid_splits, test_splits = traintest()
     gen = IEMOCAPDataset(train_splits,glove_path)
-    audio_feats, text_feats, x_vector, label = gen.__getitem__(1)
-    
-    
-    
-    
+    for i in range(len(gen)):
+        audio_feats, text_feats, x_vector, label = gen.__getitem__(i)
